@@ -1,0 +1,32 @@
+{
+  "name": "nmskvideo/flora24-crm-integration",
+  "description": "WordPress plugin for Flora24 CRM integration with WooCommerce - automated price and availability synchronization",
+  "type": "wordpress-plugin",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Roman NMSK",
+      "email": "support@mflowers.local"
+    }
+  ],
+  "require": {
+    "php": ">=7.2"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^9.0"
+  },
+  "keywords": [
+    "wordpress",
+    "woocommerce",
+    "flora24",
+    "crm",
+    "integration",
+    "synchronization",
+    "plugin"
+  ],
+  "homepage": "https://github.com/nmskvideo-dot/flora24-crm-integration",
+  "support": {
+    "issues": "https://github.com/nmskvideo-dot/flora24-crm-integration/issues",
+    "source": "https://github.com/nmskvideo-dot/flora24-crm-integration"
+  }
+}

@@ -1,0 +1,35 @@
+# WordPress
+/wp-admin/
+/wp-content/
+/wp-includes/
+wp-config.php
+wp-settings.php
+wp-load.php
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Dependencies
+/node_modules/
+/vendor/
+composer.lock
+
+# Logs
+*.log
+logs/
+flora24-logs/
+
+# OS
+.env
+.env.local
+.env.*.local
+
+# Temp files
+*.tmp
+*.cache
