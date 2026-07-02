@@ -1,14 +1,17 @@
 <?php
 /**
  * Plugin Name: Flora24 CRM Integration for MFlowers
- * Description: Synchronization of prices and availability via Flora24 API with advanced error logging for both manual and cron processes.
- * Version: 1.4.2
+ * Description: Synchronization of prices and availability via Flora24 API with advanced error logging and quick ID editing.
+ * Version: 1.5.0
  * Author: Roman NMSK
  */
 
 if (!defined('ABSPATH')) exit;
 
-// 1. ADD OPTIONS PAGE
+// =========================================================================
+// 1. SETTINGS & OPTIONS PAGE
+// =========================================================================
+
 add_action('admin_menu', 'mflowers_flora24_menu');
 function mflowers_flora24_menu() {
     add_options_page(
@@ -20,7 +23,6 @@ function mflowers_flora24_menu() {
     );
 }
 
-// 2. RENDER OPTIONS PAGE
 function mflowers_flora24_page_render() {
     if (!current_user_can('manage_woocommerce')) {
         wp_die(__('У вас немає достатньо прав для доступу до цієї сторінки.'));
@@ -101,7 +103,7 @@ function mflowers_flora24_page_render() {
                             <td>
                                 <select id="flora24_cron_interval" name="flora24_cron_interval" style="min-width: 200px;">
                                     <?php foreach ($intervals as $seconds => $label) : ?>
-                                        <option value="<?php echo $seconds; ?>" <?php selected($cron_interval, $seconds); ?>><?php echo esc_html($label); ?></option>
+                                        <option value="' . $seconds . '" <?php selected($cron_interval, $seconds); ?>><?php echo esc_html($label); ?></option>
                                     <?php endforeach; ?>
                                 </select>
                                 <p class="description">Виберіть оптимальний час між фоновими запитами до CRM</p>
@@ -385,7 +387,136 @@ function mflowers_flora24_page_render() {
     <?php
 }
 
-// 3. AJAX READ LOG FILE
+// =========================================================================
+// 2. PRODUCT EDIT PAGE METABOX FIELDS
+// =========================================================================
+
+// Display Flora24 ID directly under SKU field
+add_action('woocommerce_product_options_sku', function() {
+    woocommerce_wp_text_input([
+        'id'            => '_flora24_id',
+        'label'         => __('Flora24 ID', 'mflowers'),
+        'desc_tip'      => 'true',
+        'description'   => __('Уникальный идентификатор товара из CRM Flora24 (например, PRD-...)', 'mflowers'),
+        'type'          => 'text',
+        'wrapper_class' => 'form-row form-row-full',
+    ]);
+});
+
+// Save Flora24 ID on product update
+add_action('woocommerce_admin_process_product_object', function($product) {
+    if (isset($_POST['_flora24_id'])) {
+        $product->update_meta_data('_flora24_id', sanitize_text_field($_POST['_flora24_id']));
+    }
+});
+
+// =========================================================================
+// 3. PRODUCTS LIST QUICK EDIT COLUMN
+// =========================================================================
+
+// Add quick custom column right after 'name'
+add_filter('manage_edit-product_columns', function($columns) {
+    $new_columns = [];
+
+    foreach ($columns as $key => $title) {
+        $new_columns[$key] = $title;
+        if ($key === 'name') {
+            $new_columns['flora24_id_col'] = 'Flora24 ID';
+        }
+    }
+
+    return $new_columns;
+}, 20);
+
+// Render inline text input inside custom column
+add_action('manage_product_posts_custom_column', function($column, $post_id) {
+    if ($column === 'flora24_id_col') {
+        $flora_id = get_post_meta($post_id, '_flora24_id', true);
+        
+        echo '<input type="text" 
+                     class="mflowers-quick-flora-id" 
+                     data-product-id="' . esc_attr($post_id) . '" 
+                     value="' . esc_attr($flora_id) . '" 
+                     placeholder="PRD-..." 
+                     style="width: 100%; max-width: 180px; padding: 4px 8px; border-radius: 4px; border: 1px solid #ccd0d4;" />';
+        
+        echo '<span class="sync-status-' . esc_attr($post_id) . '" style="display:block; font-size:11px; margin-top:3px; min-height:15px;"></span>';
+    }
+}, 10, 2);
+
+// Handle inline quick-edit AJAX requests
+add_action('wp_ajax_mflowers_save_quick_flora_id', function() {
+    if (!current_user_can('edit_products')) {
+        wp_send_json_error(['message' => 'No permission'], 403);
+    }
+
+    $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
+    $flora_id   = isset($_POST['flora_id']) ? sanitize_text_field($_POST['flora_id']) : '';
+
+    if ($product_id > 0) {
+        update_post_meta($product_id, '_flora24_id', $flora_id);
+        wp_send_json_success(['message' => 'Збережено!']);
+    }
+
+    wp_send_json_error(['message' => 'Invalid data'], 400);
+});
+
+// Enqueue quick-edit inline javascript asset into admin footer
+add_action('admin_print_footer_scripts', function() {
+    $screen = get_current_screen();
+    if (!$screen || $screen->id !== 'edit-product') {
+        return;
+    }
+    ?>
+    <script type="text/javascript">
+    jQuery(document).ready(function($) {
+        $(document).on('change', '.mflowers-quick-flora-id', function() {
+            var $input = $(this);
+            var productId = $input.data('product-id');
+            var floraId = $input.val();
+            var $status = $('.sync-status-' + productId);
+
+            $status.text('Зберігаю...').css('color', '#666');
+            $input.css('border-color', '#3582c4');
+
+            $.ajax({
+                url: ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'mflowers_save_quick_flora_id',
+                    product_id: productId,
+                    flora_id: floraId
+                },
+                success: function(response) {
+                    if (response.success) {
+                        $status.text('✓ Збережено').css('color', '#46b450');
+                        $input.css('border-color', '#46b450');
+                        
+                        setTimeout(function() {
+                            $status.text('');
+                            $input.css('border-color', '#ccd0d4');
+                        }, 2000);
+                    } else {
+                        $status.text('Помилка').css('color', '#dc3232');
+                        $input.css('border-color', '#dc3232');
+                    }
+                },
+                error: function() {
+                    $status.text('Помилка мережі').css('color', '#dc3232');
+                    $input.css('border-color', '#dc3232');
+                }
+            });
+        });
+    });
+    </script>
+    <?php
+});
+
+// =========================================================================
+// 4. AJAX ACTIONS & AJAX CORE HANDLERS
+// =========================================================================
+
+// AJAX: Render log file inside modern custom dashboard terminal
 add_action('wp_ajax_mflowers_flora24_read_log_file', 'mflowers_flora24_read_log_file_handler');
 function mflowers_flora24_read_log_file_handler() {
     if (!current_user_can('manage_woocommerce')) wp_send_json_error();
@@ -406,7 +537,7 @@ function mflowers_flora24_read_log_file_handler() {
     }
 }
 
-// 4. BACKEND: SCAN PRODUCTS
+// AJAX: Scan matching WooCommerce catalog products
 add_action('wp_ajax_mflowers_flora24_admin_scan', 'mflowers_flora24_admin_scan_handler');
 function mflowers_flora24_admin_scan_handler() {
     if (!current_user_can('manage_woocommerce')) wp_send_json_error();
@@ -447,7 +578,7 @@ function mflowers_flora24_admin_scan_handler() {
     wp_send_json_success($data);
 }
 
-// 5. BACKEND: AJAX EXECUTE SINGLE SYNC WITH LOGGED ERRORS
+// AJAX: Handle synchronous processing queue for products updates
 add_action('wp_ajax_mflowers_flora24_execute_single_sync', 'mflowers_flora24_execute_single_sync_handler');
 function mflowers_flora24_execute_single_sync_handler() {
     if (!current_user_can('manage_woocommerce')) wp_send_json_error(['message' => 'No access']);
@@ -469,7 +600,7 @@ function mflowers_flora24_execute_single_sync_handler() {
         'headers' => [
             'X-API-Key'        => $api_key,
             'X-Client-Name'    => 'mflowers-wp-sync',
-            'X-Client-Version' => '1.4.2',
+            'X-Client-Version' => '1.5.0',
             'Accept'           => 'application/json',
         ],
         'timeout' => 15
@@ -536,13 +667,17 @@ function mflowers_flora24_execute_single_sync_handler() {
     ]);
 }
 
-// 6. LOGS SYSTEM
+// =========================================================================
+// 5. FILE SYSTEM STORAGE LOGGER
+// =========================================================================
+
 function mflowers_flora24_write_log_file($message) {
     $upload_dir = wp_upload_dir();
     $log_dir    = path_join($upload_dir['basedir'], 'flora24-logs');
     
     if (!file_exists($log_dir)) wp_mkdir_p($log_dir);
 
+    // Garbage collector routine (30 days lifespan ceiling limit constraint execution loop)
     $files = glob($log_dir . '/sync-*.log');
     $thirty_days_ago = time() - (30 * DAY_IN_SECONDS);
     foreach ($files as $file) {
@@ -574,7 +709,10 @@ function mflowers_flora24_get_log_files() {
     return array_map('basename', $files);
 }
 
-// 7. DYNAMIC CRON HOOK VIA ACTION SCHEDULER
+// =========================================================================
+// 6. ACTION SCHEDULER BACKGROUND AGENT (AUTOMATED CRON SYNC)
+// =========================================================================
+
 add_action('init', function() {
     if (!class_exists('ActionScheduler')) return;
 
@@ -611,7 +749,7 @@ function mflowers_flora24_execute_cron_sync() {
         'headers' => [
             'X-API-Key'        => $api_key,
             'X-Client-Name'    => 'mflowers-wp-cron-sync',
-            'X-Client-Version' => '1.4.2',
+            'X-Client-Version' => '1.5.0',
             'Accept'           => 'application/json'
         ],
         'timeout' => 30
