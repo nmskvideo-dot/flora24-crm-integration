@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Flora24 CRM Integration for MFlowers
  * Description: Synchronization of prices and availability via Flora24 API with advanced error logging and quick ID editing.
- * Version: 1.5.0
+ * Version: 1.6.1
  * Author: Roman NMSK
  */
 
@@ -103,7 +103,7 @@ function mflowers_flora24_page_render() {
                             <td>
                                 <select id="flora24_cron_interval" name="flora24_cron_interval" style="min-width: 200px;">
                                     <?php foreach ($intervals as $seconds => $label) : ?>
-                                        <option value="' . $seconds . '" <?php selected($cron_interval, $seconds); ?>><?php echo esc_html($label); ?></option>
+                                        <option value="<?php echo esc_attr($seconds); ?>" <?php selected($cron_interval, $seconds); ?>><?php echo esc_html($label); ?></option>
                                     <?php endforeach; ?>
                                 </select>
                                 <p class="description">Виберіть оптимальний час між фоновими запитами до CRM</p>
@@ -187,6 +187,7 @@ function mflowers_flora24_page_render() {
     <script type="text/javascript">
     jQuery(document).ready(function($) {
         var scannedProducts = [];
+        var dashboardNonce = '<?php echo wp_create_nonce("mflowers_flora24_dashboard_action"); ?>';
 
         function appendLog(message, color) {
             var $console = $('#mflowers-log-console');
@@ -208,7 +209,8 @@ function mflowers_flora24_page_render() {
                 type: 'POST',
                 data: {
                     action: 'mflowers_flora24_read_log_file',
-                    filename: filename
+                    filename: filename,
+                    _ajax_nonce: dashboardNonce
                 },
                 success: function(response) {
                     if (response.success) {
@@ -227,7 +229,8 @@ function mflowers_flora24_page_render() {
                         });
                         $console.scrollTop($console[0].scrollHeight);
                     } else {
-                        $console.html('<div style="color:#dc3232;">Не вдалося прочитати файл логу.</div>');
+                        var errMsg = (response.data && response.data.message) ? response.data.message : 'Не вдалося прочитати файл логу.';
+                        $console.html('<div style="color:#dc3232;">' + errMsg + '</div>');
                     }
                 }
             });
@@ -242,7 +245,10 @@ function mflowers_flora24_page_render() {
             $.ajax({
                 url: ajaxurl,
                 type: 'POST',
-                data: { action: 'mflowers_flora24_admin_scan' },
+                data: { 
+                    action: 'mflowers_flora24_admin_scan',
+                    _ajax_nonce: dashboardNonce
+                },
                 success: function(response) {
                     $btn.prop('disabled', false).html('<span class="dashicons dashicons-search" style="vertical-align: middle; margin-top:-3px;"></span> Знайти товари з Flora24 ID');
                     
@@ -357,7 +363,8 @@ function mflowers_flora24_page_render() {
                 data: {
                     action: 'mflowers_flora24_execute_single_sync',
                     product_id: currentItem.id,
-                    flora_id: currentItem.flora_id
+                    flora_id: currentItem.flora_id,
+                    _ajax_nonce: dashboardNonce
                 },
                 success: function(response) {
                     row.css('background-color', '');
@@ -368,10 +375,11 @@ function mflowers_flora24_page_render() {
                         
                         appendLog('Товар [' + response.data.title + '] оновлено: ' + response.data.log_changes, '#46b450');
                     } else {
+                        var msg = (response.data && response.data.message) ? response.data.message : 'Помилка';
                         if (response.data && response.data.status_code === 'not_found') {
                             row.find('.prod-status').text('⚠ Не знайдено в CRM').css({'color': '#dc3232', 'font-weight': 'bold'});
                         }
-                        appendLog('Помилка оновлення ID ' + currentItem.id + ': ' + response.data.message, '#dc3232');
+                        appendLog('Помилка оновлення ID ' + currentItem.id + ': ' + msg, '#dc3232');
                     }
                     syncProductBatch(items, callback);
                 },
@@ -444,8 +452,10 @@ add_action('manage_product_posts_custom_column', function($column, $post_id) {
     }
 }, 10, 2);
 
-// Handle inline quick-edit AJAX requests
+// Handle inline quick-edit AJAX requests (with Nonce check)
 add_action('wp_ajax_mflowers_save_quick_flora_id', function() {
+    check_ajax_referer('mflowers_quick_edit_id_nonce', '_ajax_nonce');
+
     if (!current_user_can('edit_products')) {
         wp_send_json_error(['message' => 'No permission'], 403);
     }
@@ -455,6 +465,7 @@ add_action('wp_ajax_mflowers_save_quick_flora_id', function() {
 
     if ($product_id > 0) {
         update_post_meta($product_id, '_flora24_id', $flora_id);
+        delete_post_meta($product_id, '_flora24_sync_status'); // clear sync state on id change
         wp_send_json_success(['message' => 'Збережено!']);
     }
 
@@ -470,6 +481,8 @@ add_action('admin_print_footer_scripts', function() {
     ?>
     <script type="text/javascript">
     jQuery(document).ready(function($) {
+        var quickEditNonce = '<?php echo wp_create_nonce("mflowers_quick_edit_id_nonce"); ?>';
+
         $(document).on('change', '.mflowers-quick-flora-id', function() {
             var $input = $(this);
             var productId = $input.data('product-id');
@@ -485,7 +498,8 @@ add_action('admin_print_footer_scripts', function() {
                 data: {
                     action: 'mflowers_save_quick_flora_id',
                     product_id: productId,
-                    flora_id: floraId
+                    flora_id: floraId,
+                    _ajax_nonce: quickEditNonce
                 },
                 success: function(response) {
                     if (response.success) {
@@ -516,31 +530,41 @@ add_action('admin_print_footer_scripts', function() {
 // 4. AJAX ACTIONS & AJAX CORE HANDLERS
 // =========================================================================
 
-// AJAX: Render log file inside modern custom dashboard terminal
+// AJAX: Render log file inside modern custom dashboard terminal (Strict validation rules added)
 add_action('wp_ajax_mflowers_flora24_read_log_file', 'mflowers_flora24_read_log_file_handler');
 function mflowers_flora24_read_log_file_handler() {
-    if (!current_user_can('manage_woocommerce')) wp_send_json_error();
+    check_ajax_referer('mflowers_flora24_dashboard_action', '_ajax_nonce');
+    if (!current_user_can('manage_woocommerce')) wp_send_json_error(['message' => 'No access'], 403);
 
     $filename = isset($_POST['filename']) ? sanitize_text_field($_POST['filename']) : '';
-    if (empty($filename) || strpos($filename, '..') !== false) {
-        wp_send_json_error(['message' => 'Invalid file']);
+    
+    // Strict filename format validation rule (prevents path traversal completely)
+    if (!preg_match('/^sync-\d{4}-\d{2}-\d{2}\.log$/', $filename)) {
+        wp_send_json_error(['message' => 'Некоректний формат імені файлу.']);
     }
 
     $upload_dir = wp_upload_dir();
     $file_path  = path_join($upload_dir['basedir'], 'flora24-logs/' . $filename);
 
     if (file_exists($file_path)) {
+        // Safe memory allocation check constraint limit
+        $filesize = filesize($file_path);
+        if ($filesize > 2 * MB_IN_BYTES) {
+            wp_send_json_error(['message' => 'Файл занадто великий для відображення (> 2MB). Будь ласка, завантажте його через FTP/SSH.']);
+        }
+
         $content = file_get_contents($file_path);
         wp_send_json_success($content);
     } else {
-        wp_send_json_error(['message' => 'File not found']);
+        wp_send_json_error(['message' => 'Файл не знайдено.']);
     }
 }
 
 // AJAX: Scan matching WooCommerce catalog products
 add_action('wp_ajax_mflowers_flora24_admin_scan', 'mflowers_flora24_admin_scan_handler');
 function mflowers_flora24_admin_scan_handler() {
-    if (!current_user_can('manage_woocommerce')) wp_send_json_error();
+    check_ajax_referer('mflowers_flora24_dashboard_action', '_ajax_nonce');
+    if (!current_user_can('manage_woocommerce')) wp_send_json_error(['message' => 'No access'], 403);
 
     $products_query = new WP_Query([
         'post_type'      => 'product',
@@ -578,10 +602,11 @@ function mflowers_flora24_admin_scan_handler() {
     wp_send_json_success($data);
 }
 
-// AJAX: Handle synchronous processing queue for products updates
+// AJAX: Handle synchronous processing queue for products updates (Mutex lock + optimization cache added)
 add_action('wp_ajax_mflowers_flora24_execute_single_sync', 'mflowers_flora24_execute_single_sync_handler');
 function mflowers_flora24_execute_single_sync_handler() {
-    if (!current_user_can('manage_woocommerce')) wp_send_json_error(['message' => 'No access']);
+    check_ajax_referer('mflowers_flora24_dashboard_action', '_ajax_nonce');
+    if (!current_user_can('manage_woocommerce')) wp_send_json_error(['message' => 'No access'], 403);
 
     $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
     $flora_id   = isset($_POST['flora_id']) ? sanitize_text_field($_POST['flora_id']) : '';
@@ -596,30 +621,50 @@ function mflowers_flora24_execute_single_sync_handler() {
     $product = wc_get_product($product_id);
     $p_name  = $product ? $product->get_name() : "ID {$product_id}";
 
-    $response = wp_remote_get('https://api.flora24.online/v1/products', [
-        'headers' => [
-            'X-API-Key'        => $api_key,
-            'X-Client-Name'    => 'mflowers-wp-sync',
-            'X-Client-Version' => '1.5.0',
-            'Accept'           => 'application/json',
-        ],
-        'timeout' => 15
-    ]);
-
-    if (is_wp_error($response)) {
-        mflowers_flora24_write_log_file("Помилка API при запиті товару [{$p_name}]: " . $response->get_error_message());
-        wp_send_json_error(['message' => $response->get_error_message()]);
+    // --- MUTEX / LOCK MECHANISM ---
+    if (get_transient('mflowers_flora24_sync_lock')) {
+        wp_send_json_error(['message' => 'Процес синхронізації вже виконується у фоні. Зачекайте хвилину.']);
     }
-    if (wp_remote_retrieve_response_code($response) !== 200) {
-        $err_msg = 'API error code ' . wp_remote_retrieve_response_code($response);
-        mflowers_flora24_write_log_file("Помилка відповіді API для [{$p_name}]: {$err_msg}");
-        wp_send_json_error(['message' => $err_msg]);
+    set_transient('mflowers_flora24_sync_lock', '1', 5 * MINUTE_IN_SECONDS);
+
+    // --- OPTIMIZATION BATCH CACHE ---
+    // If mass synchronization is running, we store the api response for 2 minutes to eliminate continuous network calls
+    $body = get_transient('mflowers_flora24_api_cache');
+    
+    if (false === $body) {
+        $response = wp_remote_get('https://api.flora24.online/v1/products', [
+            'headers' => [
+                'X-API-Key'        => $api_key,
+                'X-Client-Name'    => 'mflowers-wp-sync',
+                'X-Client-Version' => '1.6.0',
+                'Accept'           => 'application/json',
+            ],
+            'timeout' => 15
+        ]);
+
+        if (is_wp_error($response)) {
+            delete_transient('mflowers_flora24_sync_lock');
+            mflowers_flora24_write_log_file("Помилка API при запиті товару [{$p_name}]: " . $response->get_error_message());
+            wp_send_json_error(['message' => $response->get_error_message()]);
+        }
+        
+        if (wp_remote_retrieve_response_code($response) !== 200) {
+            delete_transient('mflowers_flora24_sync_lock');
+            $err_msg = 'API error code ' . wp_remote_retrieve_response_code($response);
+            mflowers_flora24_write_log_file("Помилка відповіді API для [{$p_name}]: {$err_msg}");
+            wp_send_json_error(['message' => $err_msg]);
+        }
+
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        if (!empty($body) && isset($body['products']) && is_array($body['products'])) {
+            set_transient('mflowers_flora24_api_cache', $body, 2 * MINUTE_IN_SECONDS);
+        }
     }
 
-    $body = json_decode(wp_remote_retrieve_body($response), true);
-    if (empty($body['products'])) {
-        mflowers_flora24_write_log_file("Помилка API для [{$p_name}]: Масив товарів API порожній");
-        wp_send_json_error(['message' => 'Масив товарів API порожній']);
+    if (empty($body) || !isset($body['products']) || !is_array($body['products'])) {
+        delete_transient('mflowers_flora24_sync_lock');
+        mflowers_flora24_write_log_file("Помилка відповіді API для [{$p_name}]: Некоректна структура масиву JSON");
+        wp_send_json_error(['message' => 'Некоректна структура відповіді від API.']);
     }
 
     $found_flora = null;
@@ -634,11 +679,22 @@ function mflowers_flora24_execute_single_sync_handler() {
 
     if (!$found_flora) {
         update_post_meta($product_id, '_flora24_sync_status', 'not_found');
+        delete_transient('mflowers_flora24_sync_lock');
         mflowers_flora24_write_log_file("Помилка: Товар ID {$product_id} (Flora ID: {$flora_id}) [{$p_name}] не знайдено в CRM");
         wp_send_json_error(['message' => 'Товар не знайдено в CRM', 'status_code' => 'not_found']);
     }
 
-    if (!$product) wp_send_json_error(['message' => 'Товар видалено з сайту']);
+    if (!$product) {
+        delete_transient('mflowers_flora24_sync_lock');
+        wp_send_json_error(['message' => 'Товар видалено з сайту']);
+    }
+
+    // Strict Object structure checks validation routine
+    if (!isset($found_flora['price'])) {
+        delete_transient('mflowers_flora24_sync_lock');
+        mflowers_flora24_write_log_file("Помилка валідації товару [{$p_name}]: Відсутнє поле price в об'єкті CRM");
+        wp_send_json_error(['message' => 'Відсутнє обов\'язкове поле ціни в CRM об\'єкті.']);
+    }
 
     $old_price = $product->get_regular_price();
     $old_stock = $product->get_stock_status();
@@ -658,6 +714,9 @@ function mflowers_flora24_execute_single_sync_handler() {
 
     $log_changes = "Ціна: [{$old_price} грн -> {$new_price} грн] | Наявність: [{$old_stock_text} -> {$new_stock_text}]";
     mflowers_flora24_write_log_file("Товар ID {$product_id} (Flora ID: {$flora_id}) [{$p_name}]: {$log_changes}");
+
+    // Release Lock
+    delete_transient('mflowers_flora24_sync_lock');
 
     wp_send_json_success([
         'price'       => $new_price,
@@ -730,8 +789,18 @@ add_action('init', function() {
 
 add_action('mflowers_flora24_cron_sync_event', 'mflowers_flora24_execute_cron_sync');
 function mflowers_flora24_execute_cron_sync() {
+    // Prevent overlapping during automation tasks
+    if (get_transient('mflowers_flora24_sync_lock')) {
+        mflowers_flora24_write_log_file("Авто-Крон | Пропущено: Інший процес синхронізації активний.");
+        return;
+    }
+    set_transient('mflowers_flora24_sync_lock', '1', 10 * MINUTE_IN_SECONDS);
+
     $api_key = get_option('mflowers_flora24_api_key', '');
-    if (empty($api_key)) return;
+    if (empty($api_key)) {
+        delete_transient('mflowers_flora24_sync_lock');
+        return;
+    }
 
     $products_query = new WP_Query([
         'post_type'      => 'product',
@@ -743,25 +812,33 @@ function mflowers_flora24_execute_cron_sync() {
         ]
     ]);
 
-    if (empty($products_query->posts)) return;
+    if (empty($products_query->posts)) {
+        delete_transient('mflowers_flora24_sync_lock');
+        return;
+    }
 
     $response = wp_remote_get('https://api.flora24.online/v1/products', [
         'headers' => [
             'X-API-Key'        => $api_key,
             'X-Client-Name'    => 'mflowers-wp-cron-sync',
-            'X-Client-Version' => '1.5.0',
+            'X-Client-Version' => '1.6.1',
             'Accept'           => 'application/json'
         ],
         'timeout' => 30
     ]);
 
     if (is_wp_error($response)) {
+        delete_transient('mflowers_flora24_sync_lock');
         mflowers_flora24_write_log_file("Помилка автоматичного Крону: " . $response->get_error_message());
         return;
     }
     
     $body = json_decode(wp_remote_retrieve_body($response), true);
-    if (empty($body['products'])) return;
+    if (empty($body) || !isset($body['products']) || !is_array($body['products'])) {
+        delete_transient('mflowers_flora24_sync_lock');
+        mflowers_flora24_write_log_file("Авто-Крон | Помилка структури API.");
+        return;
+    }
 
     $flora_map = [];
     foreach ($body['products'] as $p) {
@@ -781,6 +858,8 @@ function mflowers_flora24_execute_cron_sync() {
             if ($product) {
                 $p_data = $flora_map[$norm_site_id];
                 
+                if (!isset($p_data['price'])) continue;
+
                 $old_price = $product->get_regular_price();
                 $old_stock = $product->get_stock_status() === 'instock' ? 'В наявності' : 'Немає';
                 
@@ -801,4 +880,6 @@ function mflowers_flora24_execute_cron_sync() {
             mflowers_flora24_write_log_file("Авто-Крон | Помилка: Товар ID {$pid} (Flora ID: {$flora_id}) [{$p_name}] не знайдено в CRM");
         }
     }
+
+    delete_transient('mflowers_flora24_sync_lock');
 }
